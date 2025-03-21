@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Pacman City: Neon High-Tech Chase</title>
+  <style>
+    /* Basic CSS reset */
+    body, html {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+    }
+    canvas {
+      display: block;
+    }
+    #overlay {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      z-index: 100;
+    }
+    /* Game Over Panel */
+    #gameover {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 200;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding-top: 20%;
+    }
+    #gameover button {
+      padding: 10px 20px;
+      font-size: 18px;
+      cursor: pointer;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    Use arrow keys to move your car (Pacman) &amp; collect Bitcoins!
+  </div>
+  <div id="gameover">
+    <h1>Game Over</h1>
+    <button onclick="restartGame()">Replay</button>
+  </div>
+  <!-- Three.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script>
+    // --- Global variables ---
+    let scene, camera, renderer;
+    let pacman, pacmanSpeed = 0.2;
+    const ghosts = []; // holds ghost objects { mesh, speed, direction }
+    const ghostSpeeds = [0.15, 0.2, 0.25];
+    const coins = []; // collectible Bitcoin objects
+    let gameOver = false;
+    
+    // Audio
+    let backgroundSound;
+
+    // Maze: 0: open street, 1: building
+    const maze = [
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      [1,0,0,0,0,0,0,1,0,0,0,0,0,0,1],
+      [1,0,1,1,1,0,0,1,0,1,1,1,1,0,1],
+      [1,0,1,0,0,0,1,1,0,1,0,0,1,0,1],
+      [1,0,1,0,1,0,0,0,0,1,0,1,1,0,1],
+      [1,0,0,0,1,1,1,1,0,1,0,0,0,0,1],
+      [1,1,1,0,0,0,0,1,0,1,1,1,0,1,1],
+      [1,0,0,0,1,1,0,0,0,0,0,1,0,0,1],
+      [1,0,1,1,1,0,0,1,1,1,0,1,1,0,1],
+      [1,0,0,0,0,0,1,1,0,0,0,0,0,0,1],
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+    ];
+    const mazeRows = maze.length;
+    const mazeCols = maze[0].length;
+    const cellSize = 4; // size of each grid cell
+
+    // --- Helper: add neon outline to an object ---
+    function addNeonOutline(object, color = 0x00ffff) {
+      if(object.isMesh && object.geometry) {
+        const geo = new THREE.EdgesGeometry(object.geometry);
+        const mat = new THREE.LineBasicMaterial({ color: color, linewidth: 2 });
+        const wireframe = new THREE.LineSegments(geo, mat);
+        object.add(wireframe);
+      }
+      if(object.isGroup) {
+        object.children.forEach(child => addNeonOutline(child, color));
+      }
+    }
+
+    // --- Create a detailed car as a THREE.Group ---
+    function createCar(color) {
+      const carGroup = new THREE.Group();
+      // Dimensions
+      const carLength = cellSize * 0.6;
+      const carWidth = cellSize * 0.4;
+      const carHeight = cellSize * 0.3;
+      
+      // Car body
+      const bodyGeometry = new THREE.BoxGeometry(carLength, carHeight, carWidth);
+      const bodyMaterial = new THREE.MeshStandardMaterial({ color: color });
+      const bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+      carGroup.add(bodyMesh);
+      
+      // Sunroof (a thin, dark box on top)
+      const sunroofGeometry = new THREE.BoxGeometry(carLength * 0.5, 0.05, carWidth * 0.8);
+      const sunroofMaterial = new THREE.MeshStandardMaterial({ color: 0x222222 });
+      const sunroofMesh = new THREE.Mesh(sunroofGeometry, sunroofMaterial);
+      sunroofMesh.position.set(0, carHeight/2 + 0.05/2, 0);
+      carGroup.add(sunroofMesh);
+      
+      // Front grill detail
+      const grillGeometry = new THREE.BoxGeometry(0.1, carHeight * 0.4, carWidth * 0.6);
+      const grillMaterial = new THREE.MeshStandardMaterial({ color: 0x111111 });
+      const grillMesh = new THREE.Mesh(grillGeometry, grillMaterial);
+      grillMesh.position.set(carLength/2 + 0.05, 0, 0);
+      carGroup.add(grillMesh);
+      
+      // Wheels (four cylinders)
+      const wheelRadius = 0.12;
+      const wheelThickness = 0.05;
+      const wheelGeometry = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelThickness, 16);
+      const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+      
+      function addWheel(x, y, z) {
+        const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+        wheel.rotation.z = Math.PI/2;
+        wheel.position.set(x, y, z);
+        carGroup.add(wheel);
+        addNeonOutline(wheel, 0xffffff);
+      }
+      const xOffset = carLength/2 - 0.05;
+      const zOffset = carWidth/2 + 0.01;
+      const yWheel = -carHeight/2 + wheelRadius;
+      addWheel( xOffset, yWheel,  zOffset);
+      addWheel( xOffset, yWheel, -zOffset);
+      addWheel(-xOffset, yWheel,  zOffset);
+      addWheel(-xOffset, yWheel, -zOffset);
+      
+      // 90° rotation offset so forward aligns with street movement.
+      carGroup.rotation.y = Math.PI/2;
+      addNeonOutline(carGroup, 0xffffff);
+      return carGroup;
+    }
+
+    // --- Initialize the scene ---
+    function init() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x20232a);
+      
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 40, 0);
+      camera.up.set(0, 0, -1);
+      
+      renderer = new THREE.WebGLRenderer({antialias: true});
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      // --- Add Audio Listener and load background sound ---
+      const listener = new THREE.AudioListener();
+      camera.add(listener);
+      backgroundSound = new THREE.Audio(listener);
+      const audioLoader = new THREE.AudioLoader();
+      audioLoader.load('Sound/DubaiTown.mp3', function(buffer) {
+        backgroundSound.setBuffer(buffer);
+        backgroundSound.setLoop(true);
+        backgroundSound.setVolume(0.5);
+        backgroundSound.play();
+      });
+
+      scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+      directionalLight.position.set(20, 50, 20);
+      scene.add(directionalLight);
+
+      // Ground (street)
+      const groundGeometry = new THREE.PlaneGeometry(mazeCols * cellSize, mazeRows * cellSize);
+      const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x444444 });
+      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+      ground.rotation.x = -Math.PI / 2;
+      scene.add(ground);
+      addNeonOutline(ground, 0xffffff);
+
+      buildMaze();
+      drawNeonRoadLines();
+      placeCoins();
+
+      // Create Pacman as a high-tech car
+      pacman = createCar(0xffff00);
+      pacman.position.set(cellSize + cellSize/2, cellSize * 0.3/2, cellSize + cellSize/2);
+      scene.add(pacman);
+
+      // Create three ghost cars
+      const ghostColors = [0xff0000, 0x00ff00, 0xff00ff];
+      for (let i = 0; i < 3; i++) {
+        const ghostCar = createCar(ghostColors[i]);
+        let ghostX, ghostZ;
+        if(i === 0){
+          ghostX = cellSize * (mazeCols - 2) + cellSize/2;
+          ghostZ = cellSize + cellSize/2;
+        } else if(i === 1){
+          ghostX = cellSize + cellSize/2;
+          ghostZ = cellSize * (mazeRows - 2) + cellSize/2;
+        } else {
+          ghostX = cellSize * (mazeCols - 2) + cellSize/2;
+          ghostZ = cellSize * (mazeRows - 2) + cellSize/2;
+        }
+        ghostCar.position.set(ghostX, cellSize * 0.3/2, ghostZ);
+        scene.add(ghostCar);
+        const directions = [
+          {dx: 0, dz: -1},
+          {dx: 0, dz: 1},
+          {dx: -1, dz: 0},
+          {dx: 1, dz: 0}
+        ];
+        const initDir = directions[Math.floor(Math.random()*directions.length)];
+        ghosts.push({ mesh: ghostCar, speed: ghostSpeeds[i], direction: initDir });
+      }
+
+      window.addEventListener('resize', onWindowResize, false);
+      window.addEventListener('keydown', onDocumentKeyDown, false);
+      window.addEventListener('keyup', onDocumentKeyUp, false);
+
+      animate();
+    }
+
+    // --- Build maze with modern towers (blue tonality) ---
+    function buildMaze() {
+      const towerColors = [0x1e90ff, 0x4169e1, 0x4682b4, 0x87cefa, 0x00bfff];
+      for (let row = 0; row < mazeRows; row++) {
+        for (let col = 0; col < mazeCols; col++) {
+          if (maze[row][col] === 1) {
+            const heightMultiplier = Math.random() * 6 + 4;
+            const towerHeight = cellSize * heightMultiplier;
+            const towerGeometry = new THREE.BoxGeometry(cellSize, towerHeight, cellSize);
+            const color = towerColors[Math.floor(Math.random()*towerColors.length)];
+            const towerMaterial = new THREE.MeshStandardMaterial({ 
+              color: color, 
+              transparent: true, 
+              opacity: 0.6 
+            });
+            const tower = new THREE.Mesh(towerGeometry, towerMaterial);
+            tower.position.set(col * cellSize + cellSize/2, towerHeight/2, row * cellSize + cellSize/2);
+            scene.add(tower);
+            addNeonOutline(tower, 0xffffff);
+          }
+        }
+      }
+    }
+
+    // --- Draw neon dash road lines between open cells ---
+    function drawNeonRoadLines() {
+      const positions = [];
+      for (let row = 0; row < mazeRows; row++) {
+        for (let col = 0; col < mazeCols; col++) {
+          if (maze[row][col] === 0) {
+            const x = col * cellSize + cellSize/2;
+            const z = row * cellSize + cellSize/2;
+            if(col < mazeCols - 1 && maze[row][col+1] === 0) {
+              const x2 = (col+1) * cellSize + cellSize/2;
+              positions.push(x, 0.15, z, x2, 0.15, z);
+            }
+            if(row < mazeRows - 1 && maze[row+1][col] === 0) {
+              const z2 = (row+1) * cellSize + cellSize/2;
+              positions.push(x, 0.15, z, x, 0.15, z2);
+            }
+          }
+        }
+      }
+      const roadGeometry = new THREE.BufferGeometry();
+      roadGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const roadMaterial = new THREE.LineDashedMaterial({
+        color: 0x00ffff,
+        dashSize: 1,
+        gapSize: 1,
+        linewidth: 2
+      });
+      const roadLines = new THREE.LineSegments(roadGeometry, roadMaterial);
+      roadLines.computeLineDistances();
+      scene.add(roadLines);
+      addNeonOutline(roadLines, 0xffffff);
+    }
+
+    // --- Place collectible Bitcoins (animated coins) ---
+    function placeCoins() {
+      const coinGeometry = new THREE.CylinderGeometry(1.2, 1.2, 0.3, 32);
+      const coinMaterial = new THREE.MeshStandardMaterial({ color: 0xffd700 });
+      for (let row = 0; row < mazeRows; row++) {
+        for (let col = 0; col < mazeCols; col++) {
+          if (maze[row][col] === 0 && Math.random() < 0.5) {
+            const coin = new THREE.Mesh(coinGeometry, coinMaterial);
+            coin.position.set(col * cellSize + cellSize/2, 0.3, row * cellSize + cellSize/2);
+            coin.rotation.x = Math.PI / 2;
+            scene.add(coin);
+            coins.push(coin);
+            addNeonOutline(coin, 0xffffff);
+          }
+        }
+      }
+    }
+
+    // --- Handle window resize ---
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // --- Keyboard controls for Pacman movement ---
+    const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+    function onDocumentKeyDown(event) {
+      if(keys.hasOwnProperty(event.key)) {
+        keys[event.key] = true;
+      }
+    }
+    function onDocumentKeyUp(event) {
+      if(keys.hasOwnProperty(event.key)) {
+        keys[event.key] = false;
+      }
+    }
+
+    // --- Check collision with walls ---
+    function isCellBlocked(x, z) {
+      const col = Math.floor(x / cellSize);
+      const row = Math.floor(z / cellSize);
+      if (row < 0 || row >= mazeRows || col < 0 || col >= mazeCols) return true;
+      return maze[row][col] === 1;
+    }
+
+    // --- Move Pacman and collect coins ---
+    function movePacman() {
+      let dx = 0, dz = 0;
+      if (keys['ArrowUp']) dz = -pacmanSpeed;
+      if (keys['ArrowDown']) dz = pacmanSpeed;
+      if (keys['ArrowLeft']) dx = -pacmanSpeed;
+      if (keys['ArrowRight']) dx = pacmanSpeed;
+
+      const newX = pacman.position.x + dx;
+      const newZ = pacman.position.z + dz;
+      if (!isCellBlocked(newX, newZ)) {
+        pacman.position.x = newX;
+        pacman.position.z = newZ;
+        if(dx !== 0 || dz !== 0){
+          pacman.rotation.y = Math.PI/2 + Math.atan2(-dx, -dz);
+        }
+      }
+      // Coin collection
+      for(let i = coins.length - 1; i >= 0; i--){
+        const coin = coins[i];
+        if(pacman.position.distanceTo(coin.position) < 1.0) {
+          scene.remove(coin);
+          coins.splice(i, 1);
+        }
+      }
+    }
+
+    // --- Move Ghosts ---
+    function moveGhosts() {
+      ghosts.forEach(ghost => {
+        const { mesh, speed, direction } = ghost;
+        const dx = direction.dx * speed;
+        const dz = direction.dz * speed;
+        const newX = mesh.position.x + dx;
+        const newZ = mesh.position.z + dz;
+        if (!isCellBlocked(newX, newZ)) {
+          mesh.position.x = newX;
+          mesh.position.z = newZ;
+        } else {
+          const directions = [
+            {dx: 0, dz: -1},
+            {dx: 0, dz: 1},
+            {dx: -1, dz: 0},
+            {dx: 1, dz: 0}
+          ];
+          const possible = directions.filter(dir => {
+            const testX = mesh.position.x + dir.dx * speed;
+            const testZ = mesh.position.z + dir.dz * speed;
+            return !isCellBlocked(testX, testZ);
+          });
+          ghost.direction = possible.length > 0 ? possible[Math.floor(Math.random() * possible.length)] : {dx: 0, dz: 0};
+        }
+        if(ghost.direction.dx !== 0 || ghost.direction.dz !== 0){
+          mesh.rotation.y = Math.PI/2 + Math.atan2(-ghost.direction.dx, -ghost.direction.dz);
+        }
+      });
+    }
+
+    // --- Animate coins (rotation and bobbing) ---
+    function animateCoins() {
+      coins.forEach(coin => {
+        coin.rotation.z += 0.02;
+        coin.position.y = 0.3 + Math.sin(Date.now() * 0.005) * 0.1;
+      });
+    }
+
+    // --- Check collision between Pacman and any Ghost ---
+    function checkCollisions() {
+      ghosts.forEach(ghost => {
+        if(pacman.position.distanceTo(ghost.mesh.position) < 1.0) {
+          triggerGameOver();
+        }
+      });
+    }
+
+    // --- Trigger Game Over ---
+    function triggerGameOver() {
+      gameOver = true;
+      document.getElementById('gameover').style.display = 'block';
+      // Optionally stop the background music:
+      if(backgroundSound && backgroundSound.isPlaying) {
+        backgroundSound.stop();
+      }
+    }
+
+    // --- Main animation loop ---
+    function animate() {
+      if(gameOver) return;
+      requestAnimationFrame(animate);
+      movePacman();
+      moveGhosts();
+      animateCoins();
+      checkCollisions();
+      const camHeight = 40;
+      camera.position.set(pacman.position.x, camHeight, pacman.position.z);
+      camera.lookAt(pacman.position);
+      renderer.render(scene, camera);
+    }
+
+    // --- Restart the game (reloads the page) ---
+    function restartGame() {
+      location.reload();
+    }
+
+    // --- Start the game ---
+    init();
+  </script>
+</body>
+</html>
